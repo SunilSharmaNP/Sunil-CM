@@ -1,8 +1,8 @@
-API_ID = "YOUR_API_ID"
-API_HASH = "YOUR_API_HASH"
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+import os
 
-# Optional for userbot/premium support
-SESSION_STRING = None  # Put your session string here if needed
+API_ID = os.environ.get("API_ID", "YOUR_API_ID")
+API_HASH = os.environ.get("API_HASH", "YOUR_API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
+SESSION_STRING = os.environ.get("SESSION_STRING", None) # Put your session string here if needed
 
 Gofile_API = "https://api.gofile.io/uploadFile"
