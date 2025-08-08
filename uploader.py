@@ -1,8 +1,7 @@
 import os
 from aiofiles.os import path as aiopath
-from aiohttp import ClientSession
+from aiohttp import ClientSession, FormData
 from random import choice
-import config
 
 class GofileUploader:
     def __init__(self, token=None):
@@ -14,32 +13,39 @@ class GofileUploader:
             async with session.get(f"{self.api_url}servers") as resp:
                 result = await resp.json()
                 if result.get("status") == "ok":
-                    return choice(result["data"]["servers"])["name"]
-                raise Exception("Failed to fetch GoFile upload server")
+                    servers = result["data"]["servers"]
+                    return choice(servers)["name"]
+                raise Exception("Failed to fetch GoFile upload server.")
 
     async def upload_file(self, file_path: str):
+        if not self.token:
+            raise ValueError("❌ GoFile API token is missing. Please check config or environment variable.")
+
         if not await aiopath.isfile(file_path):
-            raise FileNotFoundError("File not found.")
+            raise FileNotFoundError(f"❌ File not found: {file_path}")
 
         server = await self.__get_server()
         upload_url = f"https://{server}.gofile.io/uploadFile"
 
-        data = {
-            "token": self.token
-        }
+        data = FormData()
+        data.add_field("token", self.token)
 
-        async with ClientSession() as session:
-            with open(file_path, "rb") as f:
-                form_data = {
-                    "file": f
-                }
-                async with session.post(upload_url, data=data, files=form_data) as resp:
+        with open(file_path, "rb") as f:
+            data.add_field(
+                "file",
+                f,
+                filename=os.path.basename(file_path),
+                content_type="application/octet-stream"
+            )
+
+            async with ClientSession() as session:
+                async with session.post(upload_url, data=data) as resp:
                     try:
-                        out = await resp.json()
-                        if out.get("status") == "ok":
-                            return out["data"]["downloadPage"]
+                        resp_json = await resp.json()
+                        if resp_json.get("status") == "ok":
+                            return resp_json["data"]["downloadPage"]
                         else:
-                            raise Exception(f"Upload failed: {out}")
+                            raise Exception(f"Upload failed: {resp_json}")
                     except Exception:
                         text = await resp.text()
                         raise Exception(f"Unexpected GoFile response: {text}")
