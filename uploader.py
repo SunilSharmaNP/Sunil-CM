@@ -1,4 +1,5 @@
 import requests
+import config
 
 def upload_to_gofile(filepath):
     # ✅ यहाँ अपनी GoFile.io की Personal API Token डालें
