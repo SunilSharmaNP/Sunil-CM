@@ -15,10 +15,14 @@ async def merge_cmd(client, message):
     links = user_input[1:]  # skip "/merge" command itself
 
     if not links or len(links) < 2:
-        await message.reply("⚠️ कृपया कम से कम 2 वीडियो लिंक्स दें\nउदाहरण:\n`/merge link1 link2 link3`")
+        await message.reply(
+            "⚠️ Please provide at least 2 video links to merge.
+Example:
+`/merge link1 link2 link3`"
+        )
         return
 
-    await message.reply("⬇️ वीडियो डाउनलोड किया जा रहा है...")
+    await message.reply("⬇️ Downloading video files. Please wait...")
 
     downloaded_files = []
     for link in links:
@@ -28,32 +32,37 @@ async def merge_cmd(client, message):
             if success:
                 downloaded_files.append(filename)
             else:
-                await message.reply(f"❌ डाउनलोड फेल: {link}")
+                await message.reply(f"❌ Download failed: {link}")
         except Exception as e:
-            await message.reply(f"🔥 Error downloading {link}\n{str(e)}")
+            await message.reply(f"🔥 Error downloading {link}
+{str(e)}")
 
     if len(downloaded_files) < 2:
-        await message.reply("❌ दो या अधिक वीडियो डाउनलोड नहीं हो पाए, मर्जिंग संभव नहीं।")
+        await message.reply(
+            "❌ Failed to download at least two videos. Merging cannot proceed."
+        )
         return
 
-    await message.reply("⚙️ मर्जिंग चालू है...")
+    await message.reply("⚙️ Merging videos...")
 
     merged_filename = merge_videos(downloaded_files)
     if not merged_filename or not os.path.exists(merged_filename):
-        await message.reply("❌ मर्ज फेल — शायद वीडियो फॉर्मेट अलग हैं या ffmpeg error है।")
+        await message.reply(
+            "❌ Merge failed — likely due to incompatible video formats or an FFmpeg error."
+        )
         return
 
-    await message.reply("🚀 GoFile.io पर अपलोड किया जा रहा है...")
+    await message.reply("🚀 Uploading merged file to GoFile.io...")
 
     try:
         uploader = GofileUploader(token=GOFILE_TOKEN)
         gofile_link = await uploader.upload_file(merged_filename)
-
-        await message.reply(f"✅ फ़ाइल सफलतापूर्वक अपलोड हुई:\n{gofile_link}")
+        await message.reply(f"✅ File uploaded successfully:
+{gofile_link}")
     except Exception as e:
         await message.reply(f"❌ Upload failed: {str(e)}")
 
-    # Cleanup
+    # Cleanup temporary files
     for file in downloaded_files:
         if os.path.exists(file):
             os.remove(file)
