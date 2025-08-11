@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from config import API_ID, API_HASH, BOT_TOKEN, GOFILE_TOKEN
+from config import API_ID, API_HASH, BOT_TOKEN, GOFILE_TOKEN, START_MSG, HELP_MSG
 from downloader import download_file
 from merger import merge_videos
 from uploader import GofileUploader
@@ -8,6 +8,14 @@ import os
 import uuid
 
 bot = Client("video_merger_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+@bot.on_message(filters.command("start"))
+async def start_cmd(client, message):
+    await message.reply(START_MSG)
+
+@bot.on_message(filters.command("help"))
+async def help_cmd(client, message):
+    await message.reply(HELP_MSG)
 
 @bot.on_message(filters.command("merge"))
 async def merge_cmd(client, message):
