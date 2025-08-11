@@ -1,5 +1,17 @@
+# Python
 __pycache__/
 *.pyc
-*.log
-venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Env
 .env
+
+# Output
+downloads/
+logs/
+ffmpeg_error.log
+
+# Misc
+.DS_Store
