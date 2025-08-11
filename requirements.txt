@@ -1,6 +1,6 @@
 pyrogram
-aiohttp
-aiofiles
-ffmpeg-python
 tgcrypto
+aiohttp
+ffmpeg-python
 requests
+aiofiles
