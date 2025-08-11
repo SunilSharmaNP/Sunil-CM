@@ -17,8 +17,10 @@ async def merge_cmd(client, message):
     if not links or len(links) < 2:
         await message.reply(
             "⚠️ Please provide at least 2 video links to merge.
-Example:
-`/merge link1 link2 link3`"
+"
+            "Example:
+"
+            "`/merge link1 link2 link3`"
         )
         return
 
