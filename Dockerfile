@@ -1,22 +1,11 @@
-# --- Dockerfile ---
+FROM python:3.10
 
-# 1. Python base image
-FROM python:3.10-slim
-
-# 2. System dependencies (ffmpeg आदि)
-RUN apt-get update && \
-    apt-get install -y ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-
-# 3. Workdir सेट करें
 WORKDIR /app
 
-# 4. Source code कॉपी करें
 COPY . /app
+RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Python dependencies इंस्टॉल करें
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+# Install ffmpeg (Debian/Ubuntu base)
+RUN apt-get update && apt-get install -y ffmpeg
 
-# 6. कमांड (Bot स्टार्ट)
-CMD ["python", "bot.py"]
+CMD ["python3", "bot.py"]
