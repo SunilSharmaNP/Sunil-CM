@@ -46,7 +46,8 @@ async def cancel_handler(_, message: Message):
     clear_user_data(message.from_user.id)
     await message.reply_text("✅ **Operation cancelled.**\nYour queue has been cleared.", quote=True)
 
-@app.on_message(filters.video | (filters.text & ~filters.command))
+# Corrected filter combination
+@app.on_message(filters.video | (filters.text & ~filters.command()))
 async def file_handler(_, message: Message):
     user_id = message.from_user.id
     
@@ -59,11 +60,14 @@ async def file_handler(_, message: Message):
     if message.video:
         item = message
         item_type = "Video"
+    # Make sure to check for message.text being non-empty before checking is_valid_url
     elif message.text and is_valid_url(message.text):
         item = message.text
         item_type = "Link"
     else:
-        await message.reply_text("⚠️ Please send a video file or a valid direct download link.", quote=True)
+        # Avoid sending an error for non-text/non-video messages that are not commands
+        if message.text: 
+            await message.reply_text("⚠️ Please send a video file or a valid direct download link.", quote=True)
         return
 
     user_data[user_id]["queue"].append(item)
