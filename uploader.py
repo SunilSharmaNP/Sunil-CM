@@ -1,18 +1,18 @@
-# merger.py (Final version with new attractive progress template and error fix)
-import asyncio
+# uploader.py (अंतिम संस्करण, नए प्रोग्रेस टेम्पलेट और एरर फिक्स के साथ)
 import os
 import time
-from typing import List
+import asyncio
+from aiohttp import ClientSession, FormData
+from random import choice
 from config import config
-# Import the new template generator and other utils
-from utils import get_video_properties, generate_progress_string
+# MODIFIED: अब हम पुराने get_progress_bar की जगह नया टेम्पलेट जेनरेटर इम्पोर्ट करेंगे
+from utils import get_human_readable_size, generate_progress_string, get_video_properties
 
-# --- Throttling Logic (Unchanged) ---
+# --- Throttling Logic (कोई बदलाव नहीं) ---
 last_edit_time = {}
 EDIT_THROTTLE_SECONDS = 4.0
 
 async def smart_progress_editor(status_message, text: str):
-    """A throttled editor to prevent FloodWait errors."""
     if not status_message or not hasattr(status_message, 'chat'): return
     message_key = f"{status_message.chat.id}_{status_message.id}"
     now = time.time()
@@ -24,113 +24,118 @@ async def smart_progress_editor(status_message, text: str):
         except Exception:
             pass
 
-# --- MODIFIED: To accept and pass user_mention and fix the SyntaxError ---
-async def merge_videos(video_files: List[str], user_id: int, status_message, user_mention: str) -> str | None:
-    """Asynchronously tries a fast merge, then falls back to a robust merge."""
-    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
-    output_path = os.path.join(user_download_dir, f"merged_{int(time.time())}.mkv")
-    inputs_file = os.path.join(user_download_dir, "inputs.txt")
-
-    try:
-        with open(inputs_file, 'w', encoding='utf-8') as f:
-            for file in video_files:
-                abs_path = os.path.abspath(file)
-                # FIX: The following line caused the SyntaxError.
-                # f.write(f"file '{abs_path.replace("'", "'\\''")}'\n")
-                # The fix is to do the replacement outside of the f-string.
-                escaped_path = abs_path.replace("'", r"'\''")
-                f.write(f"file '{escaped_path}'\n")
-    except Exception as e:
-        await status_message.edit_text(f"❌ **Merge Failed!**\nError creating inputs file: `{e}`")
-        if os.path.exists(inputs_file):
-            os.remove(inputs_file)
+# --- Helper Functions (कोई बदलाव नहीं) ---
+async def create_default_thumbnail(video_path: str) -> str | None:
+    thumbnail_path = f"{os.path.splitext(video_path)[0]}.jpg"
+    metadata = await get_video_properties(video_path)
+    if not metadata or not metadata.get("duration"):
+        print(f"Could not get duration for '{video_path}'. Skipping default thumbnail.")
         return None
-    
-    # Fast merge is almost instant, so no progress bar is needed here.
-    await status_message.edit_text("🚀 **Starting Merge (Fast Mode)...**")
-    command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', inputs_file, '-c', 'copy', '-y', output_path]
+    thumbnail_time = metadata["duration"] / 2
+    command = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', video_path,
+        '-ss', str(thumbnail_time), '-vframes', '1',
+        '-c:v', 'mjpeg', '-f', 'image2', '-y', thumbnail_path
+    ]
     process = await asyncio.create_subprocess_exec(*command, stderr=asyncio.subprocess.PIPE)
     _, stderr = await process.communicate()
+    if process.returncode != 0:
+        print(f"Error creating default thumbnail for '{video_path}': {stderr.decode().strip()}")
+        return None
+    return thumbnail_path if os.path.exists(thumbnail_path) else None
 
-    if process.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        os.remove(inputs_file)
-        return output_path
-    else:
-        # If fast merge fails, switch to robust mode, passing user_mention along
-        await status_message.edit_text("⚠️ Fast merge failed. Switching to Robust Mode...")
-        os.remove(inputs_file)
-        if os.path.exists(output_path): # Clean up failed fast merge attempt
-            os.remove(output_path)
-        return await _merge_videos_filter(video_files, user_id, status_message, user_mention)
+class GofileUploader:
+    def __init__(self, token=None):
+        self.api_url = "https://api.gofile.io/"
+        self.token = token or config.GOFILE_TOKEN
+    async def __get_server(self):
+        async with ClientSession() as session:
+            async with session.get(f"{self.api_url}servers") as resp:
+                resp.raise_for_status(); result = await resp.json()
+                if result.get("status") == "ok": return choice(result["data"]["servers"])["name"]
+                raise Exception("Failed to fetch GoFile upload server.")
+    async def upload_file(self, file_path: str):
+        if not os.path.isfile(file_path): raise FileNotFoundError(f"File not found: {file_path}")
+        server = await self.__get_server()
+        upload_url = f"https://{server}.gofile.io/uploadFile"
+        data = FormData()
+        if self.token: data.add_field("token", self.token)
+        with open(file_path, "rb") as f:
+            data.add_field("file", f, filename=os.path.basename(file_path))
+            async with ClientSession() as session:
+                async with session.post(upload_url, data=data) as resp:
+                    resp.raise_for_status(); resp_json = await resp.json()
+                    if resp_json.get("status") == "ok": return resp_json["data"]["downloadPage"]
+                    else: raise Exception(f"GoFile upload failed: {resp_json.get('status')}")
 
-# --- MODIFIED: To use the new progress template ---
-async def _merge_videos_filter(video_files: List[str], user_id: int, status_message, user_mention: str) -> str | None:
-    """Fallback async merge function using the robust but slower 'concat' filter."""
-    user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
-    output_path = os.path.join(user_download_dir, f"merged_fallback_{int(time.time())}.mkv")
+# --- मुख्य बदलाव यहाँ है ---
+# MODIFIED: फंक्शन की परिभाषा को नए आर्गुमेंट्स (user_mention, user_id) स्वीकार करने के लिए बदला गया है
+async def upload_to_telegram(
+    client, 
+    chat_id: int, 
+    file_path: str, 
+    status_message, 
+    custom_thumbnail: str | None, 
+    custom_filename: str,
+    user_mention: str,  # <-- ADDED
+    user_id: int        # <-- ADDED
+):
+    is_default_thumb_created = False
+    thumb_to_upload = custom_thumbnail
     
-    tasks = [get_video_properties(f) for f in video_files]
-    all_properties = await asyncio.gather(*tasks)
-    
-    valid_properties = [p for p in all_properties if p and p.get('duration') is not None]
-    if len(valid_properties) != len(video_files):
-        await status_message.edit_text("❌ **Merge Failed!** Could not read metadata from all files."); return None
-        
-    total_duration = sum(p['duration'] for p in valid_properties)
-    if total_duration == 0:
-        await status_message.edit_text("❌ **Merge Failed!** Total video duration is zero."); return None
-        
-    input_args = []; filter_complex = []
-    for i, file in enumerate(video_files):
-        input_args.extend(['-i', file]); filter_complex.append(f"[{i}:v:0][{i}:a:0]")
-    
-    filter_complex_str = "".join(filter_complex) + f"concat=n={len(video_files)}:v=1:a=1[v][a]"
-    command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', *input_args, '-filter_complex', filter_complex_str, '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', '-y', '-progress', 'pipe:1', output_path]
-    
-    process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    # ADDED: अपलोड शुरू होने का समय रिकॉर्ड करें
     start_time = time.time()
-    
-    while process.returncode is None:
-        line_bytes = await process.stdout.readline()
-        if not line_bytes:
-            # If stdout pipe is closed, wait for the process to finish
-            await asyncio.sleep(0.1)
-            continue
+
+    try:
+        if not thumb_to_upload:
+            await smart_progress_editor(status_message, "Analyzing video to create default thumbnail...")
+            thumb_to_upload = await create_default_thumbnail(file_path)
+            if thumb_to_upload:
+                is_default_thumb_created = True
+
+        metadata = await get_video_properties(file_path)
+        duration = metadata.get('duration', 0) if metadata else 0
+        width = metadata.get('width', 0) if metadata else 0
+        height = metadata.get('height', 0) if metadata else 0
+
+        final_filename = f"{custom_filename}.mkv"
+        caption = f"**File:** `{final_filename}`\n**Size:** `{get_human_readable_size(os.path.getsize(file_path))}`"
+
+        # MODIFIED: प्रोग्रेस कॉलबैक को नए टेम्पलेट का उपयोग करने के लिए पूरी तरह से बदल दिया गया है
+        async def progress(current, total):
+            # प्रोग्रेस की गणना करें
+            progress_percent = current / total
+            elapsed_time = time.time() - start_time
+            speed = current / elapsed_time if elapsed_time > 0 else 0
+            eta = (total - current) / speed if speed > 0 else 0
             
-        line = line_bytes.decode('utf-8').strip()
+            # utils.py से नया प्रोग्रेस स्ट्रिंग जेनरेट करें
+            progress_text = generate_progress_string(
+                title=final_filename,
+                status="Uploading",
+                progress=progress_percent,
+                processed_bytes=current,
+                total_bytes=total,
+                speed=speed,
+                eta=int(eta),
+                start_time=start_time,
+                user_mention=user_mention,
+                user_id=user_id
+            )
+            # मैसेज को अपडेट करें
+            await smart_progress_editor(status_message, progress_text)
+
+        await client.send_video(
+            chat_id=chat_id, video=file_path, caption=caption, file_name=final_filename,
+            duration=duration, width=width, height=height, thumb=thumb_to_upload, progress=progress
+        )
+        await status_message.delete() # सफल अपलोड के बाद प्रोग्रेस मैसेज को डिलीट कर दें
+        return True
         
-        if 'out_time_ms' in line:
-            parts = line.split('=')
-            if len(parts) > 1 and parts[1].strip().isdigit():
-                current_time_ms = int(parts[1])
-                current_time_s = max(0, current_time_ms / 1000000) # Ensure it's not negative
-                progress = min(1.0, current_time_s / total_duration) if total_duration > 0 else 0
-                
-                elapsed = time.time() - start_time
-                speed_factor = current_time_s / elapsed if elapsed > 0 else 0
-                eta = (total_duration - current_time_s) / speed_factor if speed_factor > 0 else 0
-                
-                # Call the new template generator
-                progress_text = generate_progress_string(
-                    title=f"Merging {len(video_files)} files...",
-                    status="Merging (Robust)",
-                    progress=progress,
-                    processed_bytes=int(current_time_s), # For merging, this is seconds processed
-                    total_bytes=int(total_duration),     # For merging, this is total seconds
-                    speed=0, # Speed not applicable for merging time-based progress
-                    eta=int(eta),
-                    start_time=start_time,
-                    user_mention=user_mention,
-                    user_id=user_id
-                )
-                await smart_progress_editor(status_message, progress_text)
-    
-    await process.wait()
-    
-    if process.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        return output_path
-    else:
-        error_output_bytes = await process.stderr.read()
-        error_output = error_output_bytes.decode('utf-8', errors='ignore').strip()
-        print(f"Robust merge failed. FFmpeg stderr: {error_output}")
-        await status_message.edit_text(f"❌ **Merge Failed!**\nRobust method also failed.\n\n`{error_output[-500:]}`"); return None
+    except Exception as e:
+        await status_message.edit_text(f"❌ **Upload Failed!**\nError: `{e}`")
+        return False
+        
+    finally:
+        if is_default_thumb_created and thumb_to_upload and os.path.exists(thumb_to_upload):
+            os.remove(thumb_to_upload)
