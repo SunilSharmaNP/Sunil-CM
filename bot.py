@@ -46,8 +46,16 @@ async def cancel_handler(_, message: Message):
     clear_user_data(message.from_user.id)
     await message.reply_text("✅ **Operation cancelled.**\nYour queue has been cleared.", quote=True)
 
-# Corrected filter combination
-@app.on_message(filters.video | (filters.text & ~filters.command()))
+# --- CORRECTED SECTION ---
+# Define all commands used by the bot.
+# This list is used to create a filter that ignores all commands in the file_handler.
+USED_COMMANDS = ["start", "help", "cancel", "merge"]
+
+# This corrected filter now explicitly excludes the commands defined above.
+# It handles:
+# 1. Any video message.
+# 2. Any text message that is NOT one of the bot's commands.
+@app.on_message(filters.video | (filters.text & ~filters.command(USED_COMMANDS)))
 async def file_handler(_, message: Message):
     user_id = message.from_user.id
     
@@ -60,12 +68,12 @@ async def file_handler(_, message: Message):
     if message.video:
         item = message
         item_type = "Video"
-    # Make sure to check for message.text being non-empty before checking is_valid_url
     elif message.text and is_valid_url(message.text):
         item = message.text
         item_type = "Link"
     else:
-        # Avoid sending an error for non-text/non-video messages that are not commands
+        # If the message was text but not a valid URL, send an error.
+        # Other message types like stickers, photos, etc., will be silently ignored.
         if message.text: 
             await message.reply_text("⚠️ Please send a video file or a valid direct download link.", quote=True)
         return
@@ -78,6 +86,7 @@ async def file_handler(_, message: Message):
         f"Send more, or use `/merge` to combine them.",
         quote=True
     )
+# --- END OF CORRECTED SECTION ---
 
 @app.on_message(filters.command("merge"))
 async def merge_handler(client, message: Message):
