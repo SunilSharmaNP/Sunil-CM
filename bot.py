@@ -1,4 +1,4 @@
-# bot.py (Naya Flow: Pehle Upload Option, fir Details)
+# bot.py (utils.py ke naye progress template ke saath integrate kiya gaya)
 import os
 import shutil
 from pyrogram import Client, filters
@@ -55,7 +55,6 @@ async def cancel_handler(_, message: Message):
     await message.reply_text("✅ **Operation cancelled.**\nYour queue has been cleared.", quote=True)
 
 # --- NAYE ORDER WALE HANDLERS ---
-# Yeh special state wale handlers ab file_handler se pehle aate hain
 @app.on_message(filters.photo & filters.private & filters.create(is_waiting_for_thumbnail))
 async def thumbnail_handler(_, message: Message):
     user_id = message.from_user.id
@@ -82,6 +81,9 @@ async def no_thumbnail_handler(_, message: Message):
 @app.on_message(filters.text & filters.private & filters.create(is_waiting_for_filename))
 async def filename_handler(client, message: Message):
     user_id = message.from_user.id
+    # MODIFIED: Get user mention and ID for the progress template in the uploader
+    user_mention = message.from_user.mention
+    
     status_msg = user_data[user_id]["status_message"]
     filename = os.path.basename(message.text)
     user_data[user_id]["custom_filename"] = filename
@@ -89,13 +91,19 @@ async def filename_handler(client, message: Message):
     
     await status_msg.edit_text(f"✅ **Filename set to:** `{filename}.mkv`\n\n🚀 Starting final upload to Telegram...")
     
-    # Ab yahin se upload shuru hoga
     file_path = user_data[user_id]["merged_file"]
     thumb_path = user_data[user_id].get("custom_thumbnail")
     
+    # MODIFIED: Pass user_mention and user_id to the uploader for the new progress template
     await upload_to_telegram(
-        client=client, chat_id=message.chat.id, file_path=file_path, 
-        status_message=status_msg, custom_thumbnail=thumb_path, custom_filename=filename
+        client=client, 
+        chat_id=message.chat.id, 
+        file_path=file_path, 
+        status_message=status_msg, 
+        custom_thumbnail=thumb_path, 
+        custom_filename=filename,
+        user_mention=user_mention,
+        user_id=user_id
     )
     clear_user_data(user_id) # Process poora hone par cleanup
 
@@ -127,6 +135,8 @@ async def file_handler(_, message: Message):
 async def merge_handler(client, message: Message):
     if not message.from_user: return
     user_id = message.from_user.id
+    # MODIFIED: Get user mention for the progress template
+    user_mention = message.from_user.mention
 
     if user_id not in user_data or not user_data[user_id].get("queue"):
         await message.reply_text("Your queue is empty.", quote=True)
@@ -141,22 +151,27 @@ async def merge_handler(client, message: Message):
     video_paths = []
     queue = user_data[user_id]["queue"]
     for i, item in enumerate(queue):
-        await status_msg.edit_text(f"Downloading item {i+1} of {len(queue)}...")
-        file_path = await download_from_url(item, user_id, status_msg) if isinstance(item, str) else await download_from_tg(item, user_id, status_msg)
+        # The downloader function will now show the new progress template
+        # MODIFIED: Pass user_mention to the downloaders
+        file_path = (await download_from_url(item, user_id, status_msg, user_mention)
+                     if isinstance(item, str)
+                     else await download_from_tg(item, user_id, status_msg, user_mention))
+        
         if not file_path:
+            # Error message is usually handled inside the downloader now, but this is a fallback.
             await status_msg.edit_text("A download failed. Cancelling operation.")
             clear_user_data(user_id)
             return
         video_paths.append(file_path)
             
-    merged_path = await merge_videos(video_paths, user_id, status_msg)
+    # MODIFIED: Pass user_mention to the merger
+    merged_path = await merge_videos(video_paths, user_id, status_msg, user_mention)
     if not merged_path:
         clear_user_data(user_id)
         return
 
     user_data[user_id]["merged_file"] = merged_path
     
-    # Merge ke baad seedha upload options dikhayein
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📤 Upload to Telegram", callback_data="upload_tg")],
         [InlineKeyboardButton("🔗 Upload to GoFile.io", callback_data="upload_gofile")]
@@ -180,7 +195,6 @@ async def callback_handler(client, query: CallbackQuery):
     status_msg = user_data[user_id]["status_message"]
     
     if data == "upload_tg":
-        # Ab yeh seedha upload nahi karega, balki thumbnail maangega
         user_data[user_id]["state"] = "waiting_for_thumbnail"
         await status_msg.edit_text(
             "Okay, preparing for Telegram upload.\n\n"
@@ -196,7 +210,6 @@ async def callback_handler(client, query: CallbackQuery):
             await status_msg.edit_text(f"✅ **Upload to GoFile Complete!**\n\n🔗 **Your Link:** {link}")
         except Exception as e:
             await status_msg.edit_text(f"❌ **GoFile Upload Failed!**\nError: `{e}`")
-        # GoFile upload ke baad cleanup
         clear_user_data(user_id)
 
 if __name__ == "__main__":
