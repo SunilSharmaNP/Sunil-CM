@@ -144,4 +144,4 @@ async def _merge_videos_filter(video_files: List[str], user_id: int, status_mess
         error_output = stderr.decode().strip()
         print(f"Robust merge failed. FFmpeg stderr: {error_output}")
         await status_message.edit_text(f"❌ **Merge Failed!**\nRobust method also failed. See logs for details.")
-        return None```
+        return None
