@@ -1,60 +1,95 @@
-# merger.py
-import subprocess
+# merger.py (Modified for async operation and to fix import errors)
+import asyncio
 import os
 import time
 from typing import List
 from config import config
-from utils import get_video_metadata, get_progress_bar, get_time_left
+# Correctly import the new async function and other utils
+from utils import get_video_properties, get_progress_bar, get_time_left
+
+# --- Throttling Logic for Progress Bar ---
+last_edit_time = {}
+EDIT_THROTTLE_SECONDS = 4.0
+
+async def smart_progress_editor(status_message, text: str):
+    """A throttled editor to prevent FloodWait errors during progress updates."""
+    message_key = f"{status_message.chat.id}_{status_message.id}"
+    now = time.time()
+    last_time = last_edit_time.get(message_key, 0)
+    if (now - last_time) > EDIT_THROTTLE_SECONDS:
+        try:
+            await status_message.edit_text(text)
+            last_edit_time[message_key] = now
+        except Exception:
+            pass
 
 async def merge_videos(video_files: List[str], user_id: int, status_message) -> str | None:
     """
-    Tries to merge videos using the fast '-c copy' method first.
-    If it fails, it falls back to the slower but more robust filter method.
+    Asynchronously tries a fast merge, then falls back to a robust merge.
     """
     user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
     output_path = os.path.join(user_download_dir, f"merged_{int(time.time())}.mkv")
     inputs_file = os.path.join(user_download_dir, "inputs.txt")
 
-    with open(inputs_file, 'w') as f:
+    # Create the input file for ffmpeg's concat demuxer
+    with open(inputs_file, 'w', encoding='utf-8') as f:
         for file in video_files:
-            f.write(f"file '{os.path.abspath(file)}'\n")
+            # Format path correctly for ffmpeg
+            formatted_path = file.replace("'", "'\\''")
+            f.write(f"file '{formatted_path}'\n")
 
     await status_message.edit_text("🚀 **Starting Merge (Fast Mode)...**\nThis should be quick if videos are compatible.")
     
-    # --- Stage 1: Fast Merge Attempt (-c copy) ---
+    # --- Stage 1: Async Fast Merge Attempt (-c copy) ---
     command = [
-        'ffmpeg', '-f', 'concat', '-safe', '0', '-i', inputs_file,
+        'ffmpeg', '-hide_banner', '-loglevel', 'error', 
+        '-f', 'concat', '-safe', '0', '-i', inputs_file,
         '-c', 'copy', '-y', output_path
     ]
     
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    stdout, stderr = process.communicate()
+    process = await asyncio.create_subprocess_exec(
+        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
 
     if process.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        await status_message.edit_text("✅ **Merge Complete!**")
+        await status_message.edit_text("✅ **Merge Complete! (Fast Mode)**")
         os.remove(inputs_file)
         return output_path
     else:
+        # Fast merge failed, so we switch to the slower, more reliable method
+        error_log = stderr.decode().strip()
+        print(f"Fast merge failed. FFmpeg stderr: {error_log}")
         await status_message.edit_text(
             "⚠️ Fast merge failed. Videos might have different formats.\n"
             "🔄 **Switching to Robust Mode...** This will re-encode videos and may take longer."
         )
-        time.sleep(2)
-        print(f"Fast merge failed. FFmpeg stderr: {stderr}")
-        # --- Stage 2: Fallback to Robust Merge (re-encoding) ---
+        await asyncio.sleep(2) # Give user time to read the message
+        os.remove(inputs_file) # Clean up old inputs file before starting next stage
         return await _merge_videos_filter(video_files, user_id, status_message)
 
 
 async def _merge_videos_filter(video_files: List[str], user_id: int, status_message) -> str | None:
-    """Fallback merge function using the robust but slower 'concat' filter."""
+    """Fallback async merge function using the robust but slower 'concat' filter."""
     user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
     output_path = os.path.join(user_download_dir, f"merged_fallback_{int(time.time())}.mkv")
     
-    total_duration = sum(get_video_metadata(f)['duration'] for f in video_files)
-    if total_duration == 0:
-        await status_message.edit_text("❌ **Merge Failed!** Could not get video durations for robust mode.")
+    # Concurrently fetch properties for all videos
+    tasks = [get_video_properties(f) for f in video_files]
+    all_properties = await asyncio.gather(*tasks)
+    
+    # Filter out any that failed and get total duration
+    valid_properties = [p for p in all_properties if p and p.get('duration') is not None]
+    if len(valid_properties) != len(video_files):
+        await status_message.edit_text("❌ **Merge Failed!** Could not read metadata from one or more videos.")
         return None
         
+    total_duration = sum(p['duration'] for p in valid_properties)
+    if total_duration == 0:
+        await status_message.edit_text("❌ **Merge Failed!** Total video duration is zero.")
+        return None
+        
+    # Build the complex ffmpeg command
     input_args = []
     filter_complex = []
     for i, file in enumerate(video_files):
@@ -64,36 +99,47 @@ async def _merge_videos_filter(video_files: List[str], user_id: int, status_mess
     filter_complex_str = "".join(filter_complex) + f"concat=n={len(video_files)}:v=1:a=1[v][a]"
     
     command = [
-        'ffmpeg', *input_args, '-filter_complex', filter_complex_str,
+        'ffmpeg', '-hide_banner', *input_args, '-filter_complex', filter_complex_str,
         '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'fast',
         '-crf', '23', '-c:a', 'aac', '-b:a', '192k', '-y',
         '-progress', 'pipe:1', output_path
     ]
     
-    start_time = time.time()
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    # Run the command asynchronously and read progress from stdout
+    process = await asyncio.create_subprocess_exec(
+        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
     
-    for line in iter(process.stdout.readline, ''):
+    start_time = time.time()
+    
+    # Asynchronously read progress without blocking
+    while process.returncode is None:
+        line_bytes = await process.stdout.readline()
+        if not line_bytes:
+            break
+        line = line_bytes.decode('utf-8').strip()
+        
         if 'out_time_ms' in line:
-            current_time_ms = int(line.strip().split('=')[1])
+            current_time_ms = int(line.split('=')[1])
             progress_percent = max(0, min(1, (current_time_ms / 1000000) / total_duration))
             elapsed_time = time.time() - start_time
             
-            try:
-                await status_message.edit_text(
-                    f"⚙️ **Merging Videos (Robust Mode)...**\n"
-                    f"➢ {get_progress_bar(progress_percent)} `{progress_percent:.1%}`\n"
-                    f"➢ **Time Left:** `{get_time_left(elapsed_time, progress_percent)}`"
-                )
-            except: pass
+            progress_text = (
+                f"⚙️ **Merging Videos (Robust Mode)...**\n"
+                f"➢ {get_progress_bar(progress_percent)} `{progress_percent:.1%}`\n"
+                f"➢ **Time Left:** `{get_time_left(elapsed_time, progress_percent)}`"
+            )
+            # Use our throttled editor to prevent FloodWait
+            await smart_progress_editor(status_message, progress_text)
     
-    process.wait()
+    await process.wait()
     
     if process.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        await status_message.edit_text("✅ **Merge Complete!**")
+        await status_message.edit_text("✅ **Merge Complete! (Robust Mode)**")
         return output_path
     else:
-        error_output = process.stderr.read()
+        stderr = await process.stderr.read()
+        error_output = stderr.decode().strip()
         print(f"Robust merge failed. FFmpeg stderr: {error_output}")
-        await status_message.edit_text(f"❌ **Merge Failed!**\nRobust method also failed. Error: `{error_output[-500:]}`")
+        await status_message.edit_text(f"❌ **Merge Failed!**\nRobust method also failed. See logs for details.")
         return None
