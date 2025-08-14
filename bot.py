@@ -1,4 +1,4 @@
-# bot.py
+# bot.py (Corrected to handle messages without a user, e.g., from channels)
 import os
 import time
 from pyrogram import Client, filters
@@ -29,6 +29,9 @@ def clear_user_data(user_id: int):
 
 @app.on_message(filters.command(["start", "help"]))
 async def start_handler(_, message: Message):
+    # --- FIX: Add check to ensure message is from a user ---
+    if not message.from_user:
+        return # Ignore commands from channels or anon admins
     clear_user_data(message.from_user.id)
     await message.reply_text(
         "👋 **Hello! I am the Advanced Video Merger Bot.**\n\n"
@@ -43,20 +46,23 @@ async def start_handler(_, message: Message):
 
 @app.on_message(filters.command("cancel"))
 async def cancel_handler(_, message: Message):
+    # --- FIX: Add check to ensure message is from a user ---
+    if not message.from_user:
+        return # Ignore commands from channels or anon admins
     clear_user_data(message.from_user.id)
     await message.reply_text("✅ **Operation cancelled.**\nYour queue has been cleared.", quote=True)
 
-# --- CORRECTED SECTION ---
-# Define all commands used by the bot.
-# This list is used to create a filter that ignores all commands in the file_handler.
+# --- CORRECTED SECTION (with additional check) ---
 USED_COMMANDS = ["start", "help", "cancel", "merge"]
 
-# This corrected filter now explicitly excludes the commands defined above.
-# It handles:
-# 1. Any video message.
-# 2. Any text message that is NOT one of the bot's commands.
 @app.on_message(filters.video | (filters.text & ~filters.command(USED_COMMANDS)))
 async def file_handler(_, message: Message):
+    # --- FIX: Add check to ensure message is from a user to prevent AttributeError ---
+    # This is the primary fix for the error in your logs.
+    if not message.from_user:
+        print(f"Ignoring message of type '{message.media}' because it has no 'from_user'.")
+        return
+    
     user_id = message.from_user.id
     
     if user_id not in user_data:
@@ -72,8 +78,6 @@ async def file_handler(_, message: Message):
         item = message.text
         item_type = "Link"
     else:
-        # If the message was text but not a valid URL, send an error.
-        # Other message types like stickers, photos, etc., will be silently ignored.
         if message.text: 
             await message.reply_text("⚠️ Please send a video file or a valid direct download link.", quote=True)
         return
@@ -90,6 +94,10 @@ async def file_handler(_, message: Message):
 
 @app.on_message(filters.command("merge"))
 async def merge_handler(client, message: Message):
+    # --- FIX: Add check to ensure message is from a user ---
+    if not message.from_user:
+        return # Ignore commands from channels or anon admins
+        
     user_id = message.from_user.id
 
     if user_id not in user_data or not user_data[user_id]["queue"]:
@@ -141,6 +149,7 @@ async def merge_handler(client, message: Message):
 
 @app.on_callback_query()
 async def callback_handler(client, query: CallbackQuery):
+    # query.from_user is always safe in callbacks, no change needed here.
     user_id = query.from_user.id
     data = query.data
     
