@@ -1,8 +1,8 @@
-# bot.py (Final Corrected Interactive Flow)
+# bot.py (Final Corrected Interactive Flow with Bug Fix)
 
 import os
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from config import config
 from downloader import download_from_url, download_from_tg
 from merger import merge_videos
@@ -43,7 +43,7 @@ async def start_handler(_, message: Message):
 async def cancel_handler(_, message: Message):
     if not message.from_user: return
     clear_user_data(message.from_user.id)
-    await message.reply_text("✅ **Operation cancelled.**", quote=True, reply_markup={"remove_keyboard": True})
+    await message.reply_text("✅ **Operation cancelled.**", quote=True, reply_markup=ReplyKeyboardRemove())
 
 @app.on_message(filters.command("merge"))
 async def merge_command_handler(_, message: Message):
@@ -78,12 +78,11 @@ async def main_message_handler(client, message: Message):
     user_state = user_data.get(user_id, {}).get("state")
 
     if user_state == "merge_mode":
-        # --- सही किया गया लॉजिक: पहले बटन टेक्स्ट की जाँच करें ---
         if message.text and (message.text.lower() in ["done merging", "merge now"]):
             if len(user_data[user_id].get("queue", [])) < 2:
                 await message.reply_text("You need at least two items to merge.", quote=True)
                 return
-            await message.reply_text("Got it! Starting the merge process...", reply_markup={"remove_keyboard": True})
+            await message.reply_text("Got it! Starting the merge process...", reply_markup=ReplyKeyboardRemove())
             await start_merge_process(client, message)
             return
 
@@ -111,10 +110,9 @@ async def main_message_handler(client, message: Message):
             await message.reply_text("⚠️ This link seems invalid. Please send a direct download link.")
             return
         
-        user_data[user_id]["state"] = "processing" # Lock state
+        user_data[user_id]["state"] = "processing"
         await start_compress_process(client, message, item)
     else:
-        # अगर यूजर किसी मोड में नहीं है तो कोई कार्रवाई न करें
         pass
 
 async def start_merge_process(client, message):
