@@ -127,3 +127,17 @@ def cleanup_files(*files_or_dirs):
 def is_valid_url(url: str) -> bool:
     """A simple check to see if a string looks like a URL."""
     return re.match(r'^https?:\/\/.+$', url) is not None
+# utils.py में जोड़ें
+
+def TimeFormatter(milliseconds: float) -> str:
+    """मानव-पठनीय समय प्रारूप देता है"""
+    seconds, milliseconds = divmod(int(milliseconds), 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    tmp = ((str(days) + "d, ") if days else "") + \
+        ((str(hours) + "h, ") if hours else "") + \
+        ((str(minutes) + "m, ") if minutes else "") + \
+        ((str(seconds) + "s, ") if seconds else "") + \
+        ((str(milliseconds) + "ms, ") if milliseconds else "")
+    return tmp[:-2] if tmp else "0s"
