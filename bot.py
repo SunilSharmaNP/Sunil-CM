@@ -1,4 +1,4 @@
-# bot.py (Final Corrected Interactive Flow with Bug Fix)
+# bot.py (Final version with Quality Selection feature)
 
 import os
 from pyrogram import Client, filters
@@ -43,7 +43,7 @@ async def start_handler(_, message: Message):
 async def cancel_handler(_, message: Message):
     if not message.from_user: return
     clear_user_data(message.from_user.id)
-    await message.reply_text("✅ **Operation cancelled.**", quote=True, reply_markup=ReplyKeyboardRemove())
+    await message.reply_text("✅ **Operation cancelled.**", quote=True, reply_markup=ReplyKeyboardRemove(selective=True))
 
 @app.on_message(filters.command("merge"))
 async def merge_command_handler(_, message: Message):
@@ -82,15 +82,14 @@ async def main_message_handler(client, message: Message):
             if len(user_data[user_id].get("queue", [])) < 2:
                 await message.reply_text("You need at least two items to merge.", quote=True)
                 return
-            await message.reply_text("Got it! Starting the merge process...", reply_markup=ReplyKeyboardRemove())
+            await message.reply_text("Got it! Starting the merge process...", reply_markup=ReplyKeyboardRemove(selective=True))
             await start_merge_process(client, message)
             return
 
         item = message if message.video else message.text
-        if isinstance(item, str):
-            if not is_valid_url(item):
-                await message.reply_text("⚠️ This link seems invalid. Please send a direct download link.")
-                return
+        if isinstance(item, str) and not is_valid_url(item):
+            await message.reply_text("⚠️ This link seems invalid. Please send a direct download link.")
+            return
 
         user_data[user_id].setdefault("queue", []).append(item)
         queue_len = len(user_data[user_id]["queue"])
@@ -150,16 +149,19 @@ async def start_compress_process(client, message, item_to_process):
     if not file_path:
         clear_user_data(user_id)
         return
-
-    compressed_path = await convert_video(file_path, os.path.dirname(file_path), status_msg, user_mention, user_id)
-    if not compressed_path:
-        clear_user_data(user_id)
-        return
         
-    user_data[user_id]["final_file"] = compressed_path
+    # --- नया: गुणवत्ता चयन बटन दिखाएं ---
+    user_data[user_id]["file_to_compress"] = file_path
     
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Upload to Telegram", callback_data="upload_tg")], [InlineKeyboardButton("🔗 Upload to GoFile.io", callback_data="upload_gofile")]])
-    await status_msg.edit_text("✅ **Compression Successful!**\n\nChoose where to upload the file:", reply_markup=keyboard)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("1080p (x264)", callback_data="compress_1080p")],
+        [InlineKeyboardButton("720p (x264)", callback_data="compress_720p"), InlineKeyboardButton("720p (HEVC)", callback_data="compress_720p_hevc")],
+        [InlineKeyboardButton("480p (x264)", callback_data="compress_480p"), InlineKeyboardButton("480p (HEVC)", callback_data="compress_480p_hevc")]
+    ])
+    await status_msg.edit_text(
+        f"✅ **Download Complete!**\n\nFile: `{os.path.basename(file_path)}`\n\nPlease select the desired output quality:",
+        reply_markup=keyboard
+    )
 
 @app.on_callback_query()
 async def callback_handler(client, query: CallbackQuery):
@@ -170,8 +172,37 @@ async def callback_handler(client, query: CallbackQuery):
 
     data = query.data
     status_msg = user_data[user_id]["status_message"]
-    final_file = user_data[user_id].get("final_file")
+    
+    # --- नया: गुणवत्ता चयन को हैंडल करें ---
+    if data.startswith("compress_"):
+        quality = data.split("_", 1)[1]
+        file_to_compress = user_data[user_id].get("file_to_compress")
 
+        if not file_to_compress:
+            await query.answer("Error: Source file not found. Please start over.", show_alert=True)
+            return
+
+        await status_msg.edit_text(f"🚀 **Starting compression to {quality}...**")
+        
+        compressed_path = await convert_video(
+            video_file=file_to_compress,
+            output_directory=os.path.dirname(file_to_compress),
+            status_message=status_msg,
+            user_mention=query.from_user.mention,
+            user_id=user_id,
+            quality=quality
+        )
+        if not compressed_path:
+            clear_user_data(user_id)
+            return
+            
+        user_data[user_id]["final_file"] = compressed_path
+        
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Upload to Telegram", callback_data="upload_tg")], [InlineKeyboardButton("🔗 Upload to GoFile.io", callback_data="upload_gofile")]])
+        await status_msg.edit_text("✅ **Compression Successful!**\n\nChoose where to upload the file:", reply_markup=keyboard)
+        return
+
+    final_file = user_data[user_id].get("final_file")
     if not final_file:
         await query.answer("Error: The processed file was not found.", show_alert=True)
         return
@@ -233,5 +264,5 @@ async def filename_handler(client, message: Message):
     clear_user_data(user_id)
 
 if __name__ == "__main__":
-    print("Bot is starting with final corrected interactive flow...")
+    print("Bot is starting with quality selection feature...")
     app.run()
