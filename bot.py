@@ -8,6 +8,7 @@ from downloader import download_from_url, download_from_tg
 from merger import merge_videos
 from uploader import GofileUploader, upload_to_telegram
 from utils import cleanup_files, is_valid_url
+from helper.compress import 
 
 user_data = {}
 
@@ -53,6 +54,62 @@ async def cancel_handler(_, message: Message):
     if not message.from_user: return
     clear_user_data(message.from_user.id)
     await message.reply_text("✅ **Operation cancelled.**\nYour queue has been cleared.", quote=True)
+
+# bot.py (cancel_handler के बाद)
+
+@app.on_message(filters.command("compress") & filters.private)
+async def compress_command(client, message: Message):
+    if not message.from_user: return
+    user_id = message.from_user.id
+    
+    if not message.reply_to_message:
+        await message.reply_text("Please reply to a video file or a direct download link to compress it.", quote=True)
+        return
+
+    # यह जाँचें कि क्या बॉट पहले से ही इस यूजर के लिए व्यस्त है
+    if user_data.get(user_id):
+        await message.reply_text("I'm already working on a task for you. Please wait or use /cancel.", quote=True)
+        return
+
+    replied = message.reply_to_message
+    item_to_download = None
+    
+    if replied.video:
+        item_to_download = replied
+    elif replied.text and is_valid_url(replied.text):
+        item_to_download = replied.text
+    else:
+        await message.reply_text("Please reply to a valid video file or a direct download link.", quote=True)
+        return
+
+    status_msg = await message.reply_text("🚀 **Starting compression process...**", quote=True)
+    user_data[user_id] = {"status_message": status_msg}
+
+    # --- आपके मौजूदा डाउनलोडर का उपयोग ---
+    file_path = None
+    if isinstance(item_to_download, str): # यह एक लिंक है
+        file_path = await download_from_url(item_to_download, user_id, status_msg)
+    else: # यह एक टेलीग्राम संदेश है
+        file_path = await download_from_tg(item_to_download, user_id, status_msg)
+        
+    if not file_path:
+        await status_msg.edit_text("❌ Download failed. Operation cancelled.")
+        clear_user_data(user_id)
+        return
+        
+    user_data[user_id]["file_to_compress"] = file_path
+
+    # --- यूजर से पुष्टि मांगें ---
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes, Start Compressing", callback_data="start_compress"),
+            InlineKeyboardButton("❌ No, Cancel", callback_data="cancel_compress")
+        ]
+    ])
+    await status_msg.edit_text(
+        f"✅ **Download Complete!**\n\n➢ **File:** `{os.path.basename(file_path)}`\n\nDo you want to proceed with compression?",
+        reply_markup=keyboard
+    )
 
 # --- NAYE ORDER WALE HANDLERS ---
 # Yeh special state wale handlers ab file_handler se pehle aate hain
@@ -154,7 +211,7 @@ async def merge_handler(client, message: Message):
         clear_user_data(user_id)
         return
 
-    user_data[user_id]["merged_file"] = merged_path
+    user_data[user_id]["final_file"] = merged_path
     
     # Merge ke baad seedha upload options dikhayein
     keyboard = InlineKeyboardMarkup([
@@ -172,12 +229,54 @@ async def callback_handler(client, query: CallbackQuery):
     user_id = query.from_user.id
     data = query.data
     
-    if user_id not in user_data or not user_data[user_id].get("merged_file"):
+    if user_id not in user_data or not user_data[user_id].get("final_file"):
         await query.answer("Sorry, your session has expired or been cancelled.", show_alert=True)
         return
 
     await query.message.edit_reply_markup(None)
     status_msg = user_data[user_id]["status_message"]
+
+    # on_callback_query फंक्शन में, `if data == "upload_tg":` से पहले यह कोड जोड़ें:
+
+    if data == "start_compress":
+        if not user_data[user_id].get("file_to_compress"):
+            await query.answer("Sorry, the file to compress was not found. Please start over.", show_alert=True)
+            return
+
+        await status_msg.edit_text("🔄 Initializing compression engine...")
+        file_to_compress = user_data[user_id]["file_to_compress"]
+        user_download_dir = os.path.dirname(file_to_compress)
+
+        # --- कंप्रेशन फंक्शन को कॉल करें ---
+        compressed_path = await convert_video(
+            video_file=file_to_compress,
+            output_directory=user_download_dir,
+            message=message, # मूल संदेश ऑब्जेक्ट
+            status_message=status_msg
+        )
+        
+        if not compressed_path:
+            # convert_video फंक्शन में त्रुटि संदेश पहले ही भेज दिया जाएगा
+            clear_user_data(user_id)
+            return
+
+        # --- आपके मौजूदा अपलोड फ्लो को ट्रिगर करें ---
+        user_data[user_id]["final_file"] = compressed_path # सामान्य की के तहत सहेजें
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 Upload to Telegram", callback_data="upload_tg")],
+            [InlineKeyboardButton("🔗 Upload to GoFile.io", callback_data="upload_gofile")]
+        ])
+        await status_msg.edit_text(
+            "✅ **Compression Successful!**\n\nChoose where you want to upload the file:",
+            reply_markup=keyboard
+        )
+        return # आगे के कोड को चलने से रोकने के लिए
+
+    elif data == "cancel_compress":
+        await status_msg.edit_text("✅ **Operation cancelled.**")
+        clear_user_data(user_id)
+        return
     
     if data == "upload_tg":
         # Ab yeh seedha upload nahi karega, balki thumbnail maangega
