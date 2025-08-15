@@ -29,8 +29,9 @@ async def convert_video(video_file, output_directory, status_message, user_menti
         await status_message.edit_text("❌ **Error:** Could not get video duration.")
         return None
 
-    encoder = "h264_nvenc"
-    preset = "fast"
+    # --- महत्वपूर्ण बदलाव: CPU एन्कोडिंग का उपयोग करें जो हमेशा काम करेगा ---
+    encoder = "libx264"
+    preset = "veryfast"  # CPU के लिए 'veryfast' एक अच्छा संतुलन है
     
     with open(progress_file, 'w') as f: pass
 
@@ -63,14 +64,15 @@ async def convert_video(video_file, output_directory, status_message, user_menti
             elapsed_time = int(time_in_us[-1]) / 1000000
             current_speed = float(speed[-1])
             
-            percentage = min(elapsed_time * 100 / total_time, 100)
+            percentage = min(elapsed_time * 100 / total_time, 100) if total_time > 0 else 0
             eta = (total_time - elapsed_time) / current_speed if current_speed > 0 else 0
             
+            # यहाँ हम processed_bytes और total_bytes को सेकंड में भेजेंगे
             progress_text = generate_progress_string(
                 title=os.path.basename(out_put_file_name), status="Compressing",
                 progress=percentage / 100, processed_bytes=int(elapsed_time),
-                total_bytes=int(total_time), speed=current_speed, eta=eta,
-                start_time=start_time, user_mention=user_mention, user_id=user_id
+                total_bytes=int(total_time), speed=0, # स्पीड यहाँ बाइट्स में नहीं है
+                eta=eta, start_time=start_time, user_mention=user_mention, user_id=user_id
             )
             try:
                 await status_message.edit_text(progress_text)
@@ -79,8 +81,9 @@ async def convert_video(video_file, output_directory, status_message, user_menti
 
     _, stderr = await process.communicate()
     if process.returncode != 0:
-        LOGGER.error(f"FFmpeg Error: {stderr.decode().strip()}")
-        await status_message.edit_text(f"❌ **Compression Failed!**\n`{stderr.decode().strip()}`")
+        error_message = stderr.decode().strip()
+        LOGGER.error(f"FFmpeg Error: {error_message}")
+        await status_message.edit_text(f"❌ **Compression Failed!**\n`{error_message}`")
         return None
     
     return out_put_file_name if os.path.exists(out_put_file_name) else None
