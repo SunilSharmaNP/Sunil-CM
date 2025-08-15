@@ -10,8 +10,9 @@ from utils import generate_progress_string
 
 LOGGER = logging.getLogger(__name__)
 
-async def convert_video(video_file, output_directory, status_message, user_mention, user_id):
-    out_put_file_name = os.path.join(output_directory, f"compressed_{int(time.time())}.mkv")
+async def convert_video(video_file, output_directory, status_message, user_mention, user_id, quality: str):
+    """वीडियो को चयनित गुणवत्ता के आधार पर कंप्रेस करता है।"""
+    out_put_file_name = os.path.join(output_directory, f"compressed_{quality}_{int(time.time())}.mkv")
     progress_file = os.path.join(output_directory, "progress.txt")
     
     try:
@@ -29,18 +30,37 @@ async def convert_video(video_file, output_directory, status_message, user_menti
         await status_message.edit_text("❌ **Error:** Could not get video duration.")
         return None
 
-    # --- महत्वपूर्ण बदलाव: CPU एन्कोडिंग का उपयोग करें जो हमेशा काम करेगा ---
-    encoder = "libx264"
-    preset = "veryfast"  # CPU के लिए 'veryfast' एक अच्छा संतुलन है
+    # --- गुणवत्ता के आधार पर FFmpeg पैरामीटर सेट करें ---
+    quality_presets = {
+        # H.264 Presets (व्यापक संगतता)
+        "1080p": {"codec": "libx264", "crf": "22", "scale": "scale=-2:1080", "preset": "veryfast"},
+        "720p":  {"codec": "libx264", "crf": "23", "scale": "scale=-2:720", "preset": "veryfast"},
+        "480p":  {"codec": "libx264", "crf": "24", "scale": "scale=-2:480", "preset": "veryfast"},
+        # H.265/HEVC Presets (बेहतर कंप्रेशन, छोटी फाइलें)
+        "720p_hevc": {"codec": "libx265", "crf": "26", "tag": "hvc1", "scale": "scale=-2:720", "preset": "medium"},
+        "480p_hevc": {"codec": "libx265", "crf": "28", "tag": "hvc1", "scale": "scale=-2:480", "preset": "medium"},
+    }
     
+    params = quality_presets.get(quality)
+    if not params:
+        await status_message.edit_text("❌ Invalid quality selected.")
+        return None
+
     with open(progress_file, 'w') as f: pass
 
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-progress", progress_file, "-i", video_file,
-        "-c:v", encoder, "-preset", preset, "-crf", "24",
-        "-c:a", "copy", "-y", out_put_file_name
+        "-c:v", params["codec"],
+        "-preset", params["preset"],
+        "-crf", params["crf"],
+        "-vf", params["scale"],
+        "-c:a", "copy",  # ऑडियो को बिना री-एनकोड किए कॉपी करें
+        "-y", out_put_file_name
     ]
+    # HEVC के लिए वीडियो टैग जोड़ें (स्ट्रीमिंग संगतता के लिए)
+    if "tag" in params:
+        command.extend(["-tag:v", params["tag"]])
 
     start_time = time.time()
     process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -67,11 +87,10 @@ async def convert_video(video_file, output_directory, status_message, user_menti
             percentage = min(elapsed_time * 100 / total_time, 100) if total_time > 0 else 0
             eta = (total_time - elapsed_time) / current_speed if current_speed > 0 else 0
             
-            # यहाँ हम processed_bytes और total_bytes को सेकंड में भेजेंगे
             progress_text = generate_progress_string(
-                title=os.path.basename(out_put_file_name), status="Compressing",
+                title=os.path.basename(out_put_file_name), status=f"Compressing ({quality})",
                 progress=percentage / 100, processed_bytes=int(elapsed_time),
-                total_bytes=int(total_time), speed=0, # स्पीड यहाँ बाइट्स में नहीं है
+                total_bytes=int(total_time), speed=0, # बाइट्स में नहीं है
                 eta=eta, start_time=start_time, user_mention=user_mention, user_id=user_id
             )
             try:
