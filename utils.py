@@ -30,16 +30,9 @@ def get_time_formatted(seconds: float) -> str:
     return f"{seconds}s"
 
 def generate_progress_string(
-    title: str,
-    status: str,
-    progress: float,
-    processed_bytes: int,
-    total_bytes: int,
-    speed: float,
-    eta: int,
-    start_time: float,
-    user_mention: str,
-    user_id: int
+    title: str, status: str, progress: float,
+    processed_bytes: int, total_bytes: int, speed: float,
+    eta: int, start_time: float, user_mention: str, user_id: int
 ) -> str:
     elapsed_time = get_time_formatted(time.time() - start_time)
     
@@ -50,7 +43,7 @@ def generate_progress_string(
     else:
         processed_str = get_human_readable_size(processed_bytes)
         total_str = get_human_readable_size(total_bytes)
-        speed_str = f"{get_human_readable_size(speed)}/s"
+        speed_str = f"{get_human_readable_size(speed)}/s" if speed > 0 else "N/A"
 
     return (
         f"**🎥 𝐓ɪᴛᴛʟᴇ :** `{title}`\n\n"
@@ -69,44 +62,29 @@ def generate_progress_string(
     )
 
 async def get_video_properties(video_path: str) -> dict | None:
-    if not os.path.exists(video_path):
-        print(f"Video file not found: {video_path}")
-        return None
+    if not os.path.exists(video_path): return None
     command = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", video_path]
     process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        print(f"Error getting video properties for '{video_path}': {stderr.decode().strip()}")
-        return None
+    if process.returncode != 0: return None
     try:
         data = json.loads(stdout)
         video_stream = next((s for s in data["streams"] if s["codec_type"] == "video"), None)
-        if not video_stream:
-            print(f"No video stream found in '{video_path}'"); return None
+        if not video_stream: return None
         duration_str = video_stream.get("duration", data.get("format", {}).get("duration", "0"))
         return {"duration": int(float(duration_str)), "width": int(video_stream.get("width", 0)), "height": int(video_stream.get("height", 0))}
-    except (json.JSONDecodeError, KeyError, StopIteration, ValueError) as e:
-        print(f"Failed to parse ffprobe output for '{video_path}': {e}"); return None
+    except Exception: return None
 
 def cleanup_files(*files_or_dirs):
     for item in files_or_dirs:
         try:
             if os.path.isdir(item): shutil.rmtree(item)
             elif os.path.isfile(item): os.remove(item)
-        except OSError as e:
-            print(f"Error cleaning up {item}: {e}")
+        except OSError: pass
 
 def is_valid_url(url: str) -> bool:
     return re.match(r'^https?:\/\/.+$', url) is not None
 
 def TimeFormatter(milliseconds: float) -> str:
-    seconds, milliseconds = divmod(int(milliseconds), 1000)
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
-    tmp = ((str(days) + "d, ") if days else "") + \
-        ((str(hours) + "h, ") if hours else "") + \
-        ((str(minutes) + "m, ") if minutes else "") + \
-        ((str(seconds) + "s, ") if seconds else "") + \
-        ((str(milliseconds) + "ms, ") if milliseconds else "")
-    return tmp[:-2] if tmp else "0s"
+    seconds, _ = divmod(int(milliseconds), 1000)
+    return get_time_formatted(seconds)
