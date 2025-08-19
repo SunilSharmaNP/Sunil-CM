@@ -1,21 +1,30 @@
-# bot.py (Final version with Quality Selection feature)
-
+# bot.py (Naya Flow: Pehle Upload Option, fir Details)
 import os
+import shutil
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from config import config
 from downloader import download_from_url, download_from_tg
 from merger import merge_videos
 from uploader import GofileUploader, upload_to_telegram
 from utils import cleanup_files, is_valid_url
-from helper.compress import convert_video
 
 user_data = {}
 
 app = Client(
     "ss-merger-bot",
-    api_id=config.API_ID, api_hash=config.API_HASH, bot_token=config.BOT_TOKEN
+    api_id=config.API_ID,
+    api_hash=config.API_HASH,
+    bot_token=config.BOT_TOKEN
 )
+
+async def is_waiting_for_thumbnail(_, __, message: Message):
+    if not message.from_user: return False
+    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_thumbnail"
+
+async def is_waiting_for_filename(_, __, message: Message):
+    if not message.from_user: return False
+    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_filename"
 
 def clear_user_data(user_id: int):
     if user_id in user_data:
@@ -31,11 +40,11 @@ async def start_handler(_, message: Message):
     if not message.from_user: return
     clear_user_data(message.from_user.id)
     await message.reply_text(
-        "👋 **Welcome! I am your Advanced Merger & Compressor Bot.**\n\n"
+        "👋 **Hello! I am the Advanced Video Merger Bot.**\n\n"
         "**How to use:**\n"
-        "➢ Use `/merge` to start a new merge session.\n"
-        "➢ Use `/compress` to start a new compress session.\n"
-        "➢ Use `/cancel` at any time to stop the current operation.",
+        "1. Send me videos directly OR send direct download links (one per message).\n"
+        "2. When you are ready, send the `/merge` command.\n\n"
+        "Use `/cancel` at any time to clear your queue and start over.",
         quote=True
     )
 
@@ -43,189 +52,10 @@ async def start_handler(_, message: Message):
 async def cancel_handler(_, message: Message):
     if not message.from_user: return
     clear_user_data(message.from_user.id)
-    await message.reply_text("✅ **Operation cancelled.**", quote=True, reply_markup=ReplyKeyboardRemove(selective=True))
+    await message.reply_text("✅ **Operation cancelled.**\nYour queue has been cleared.", quote=True)
 
-@app.on_message(filters.command("merge"))
-async def merge_command_handler(_, message: Message):
-    if not message.from_user: return
-    user_id = message.from_user.id
-    clear_user_data(user_id)
-    user_data[user_id] = {"state": "merge_mode", "queue": []}
-    await message.reply_text(
-        "**Okay, I'm ready for merging.**\n\n"
-        "Send me your videos or direct links one by one. When you're done, press the 'Done Merging' button below.",
-        reply_markup=ReplyKeyboardMarkup([["Done Merging"]], resize_keyboard=True, one_time_keyboard=True)
-    )
-
-@app.on_message(filters.command("compress"))
-async def compress_command_handler(_, message: Message):
-    if not message.from_user: return
-    user_id = message.from_user.id
-    clear_user_data(user_id)
-    user_data[user_id] = {"state": "compress_mode"}
-    await message.reply_text(
-        "**Okay, I'm ready to compress.**\n\n"
-        "Please send me the single video file or direct link you want to compress."
-    )
-
-@app.on_message(
-    (filters.video | (filters.text & ~filters.command(["start", "help", "cancel", "merge", "compress"]))) &
-    filters.private
-)
-async def main_message_handler(client, message: Message):
-    if not message.from_user: return
-    user_id = message.from_user.id
-    user_state = user_data.get(user_id, {}).get("state")
-
-    if user_state == "merge_mode":
-        if message.text and (message.text.lower() in ["done merging", "merge now"]):
-            if len(user_data[user_id].get("queue", [])) < 2:
-                await message.reply_text("You need at least two items to merge.", quote=True)
-                return
-            await message.reply_text("Got it! Starting the merge process...", reply_markup=ReplyKeyboardRemove(selective=True))
-            await start_merge_process(client, message)
-            return
-
-        item = message if message.video else message.text
-        if isinstance(item, str) and not is_valid_url(item):
-            await message.reply_text("⚠️ This link seems invalid. Please send a direct download link.")
-            return
-
-        user_data[user_id].setdefault("queue", []).append(item)
-        queue_len = len(user_data[user_id]["queue"])
-        
-        button_layout = [["Done Merging"]]
-        if queue_len >= 2:
-            button_layout = [["Merge Now"], ["Done Merging"]]
-
-        await message.reply_text(
-            f"✅ **Item #{queue_len} added to queue!**",
-            reply_markup=ReplyKeyboardMarkup(button_layout, resize_keyboard=True, one_time_keyboard=True)
-        )
-    
-    elif user_state == "compress_mode":
-        item = message if message.video else message.text
-        if isinstance(item, str) and not is_valid_url(item):
-            await message.reply_text("⚠️ This link seems invalid. Please send a direct download link.")
-            return
-        
-        user_data[user_id]["state"] = "processing"
-        await start_compress_process(client, message, item)
-    else:
-        pass
-
-async def start_merge_process(client, message):
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention
-    status_msg = await message.reply_text("🚀 **Initializing Merge...**", quote=True)
-    user_data[user_id]["status_message"] = status_msg
-
-    video_paths = []
-    queue = user_data[user_id]["queue"]
-    for i, item in enumerate(queue):
-        file_path = await download_from_url(item, user_id, status_msg, user_mention) if isinstance(item, str) else await download_from_tg(item, user_id, status_msg, user_mention)
-        if not file_path:
-            clear_user_data(user_id)
-            return
-        video_paths.append(file_path)
-            
-    merged_path = await merge_videos(video_paths, user_id, status_msg, user_mention)
-    if not merged_path:
-        clear_user_data(user_id)
-        return
-
-    user_data[user_id]["final_file"] = merged_path
-    
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Upload to Telegram", callback_data="upload_tg")], [InlineKeyboardButton("🔗 Upload to GoFile.io", callback_data="upload_gofile")]])
-    await status_msg.edit_text("✅ **Merge Successful!**\n\nChoose where to upload the file:", reply_markup=keyboard)
-
-async def start_compress_process(client, message, item_to_process):
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention
-    status_msg = await message.reply_text("🚀 **Initializing Compression...**", quote=True)
-    user_data[user_id]["status_message"] = status_msg
-
-    file_path = await download_from_url(item_to_process, user_id, status_msg, user_mention) if isinstance(item_to_process, str) else await download_from_tg(message, user_id, status_msg, user_mention)
-    if not file_path:
-        clear_user_data(user_id)
-        return
-        
-    # --- नया: गुणवत्ता चयन बटन दिखाएं ---
-    user_data[user_id]["file_to_compress"] = file_path
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("1080p (x264)", callback_data="compress_1080p")],
-        [InlineKeyboardButton("720p (x264)", callback_data="compress_720p"), InlineKeyboardButton("720p (HEVC)", callback_data="compress_720p_hevc")],
-        [InlineKeyboardButton("480p (x264)", callback_data="compress_480p"), InlineKeyboardButton("480p (HEVC)", callback_data="compress_480p_hevc")]
-    ])
-    await status_msg.edit_text(
-        f"✅ **Download Complete!**\n\nFile: `{os.path.basename(file_path)}`\n\nPlease select the desired output quality:",
-        reply_markup=keyboard
-    )
-
-@app.on_callback_query()
-async def callback_handler(client, query: CallbackQuery):
-    user_id = query.from_user.id
-    if user_id not in user_data:
-        await query.answer("Sorry, your session has expired.", show_alert=True)
-        return
-
-    data = query.data
-    status_msg = user_data[user_id]["status_message"]
-    
-    # --- नया: गुणवत्ता चयन को हैंडल करें ---
-    if data.startswith("compress_"):
-        quality = data.split("_", 1)[1]
-        file_to_compress = user_data[user_id].get("file_to_compress")
-
-        if not file_to_compress:
-            await query.answer("Error: Source file not found. Please start over.", show_alert=True)
-            return
-
-        await status_msg.edit_text(f"🚀 **Starting compression to {quality}...**")
-        
-        compressed_path = await convert_video(
-            video_file=file_to_compress,
-            output_directory=os.path.dirname(file_to_compress),
-            status_message=status_msg,
-            user_mention=query.from_user.mention,
-            user_id=user_id,
-            quality=quality
-        )
-        if not compressed_path:
-            clear_user_data(user_id)
-            return
-            
-        user_data[user_id]["final_file"] = compressed_path
-        
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Upload to Telegram", callback_data="upload_tg")], [InlineKeyboardButton("🔗 Upload to GoFile.io", callback_data="upload_gofile")]])
-        await status_msg.edit_text("✅ **Compression Successful!**\n\nChoose where to upload the file:", reply_markup=keyboard)
-        return
-
-    final_file = user_data[user_id].get("final_file")
-    if not final_file:
-        await query.answer("Error: The processed file was not found.", show_alert=True)
-        return
-        
-    await query.message.edit_reply_markup(None)
-    
-    if data == "upload_tg":
-        user_data[user_id]["state"] = "waiting_for_thumbnail"
-        await status_msg.edit_text("Please send the **thumbnail** you want to use, or send /notg_thumbnail for a default one.")
-    
-    elif data == "upload_gofile":
-        await status_msg.edit_text("🚀 Uploading to GoFile.io...")
-        try:
-            link = await GofileUploader().upload_file(final_file)
-            await status_msg.edit_text(f"✅ **GoFile Upload Complete!**\n\n🔗 **Link:** {link}")
-        except Exception as e:
-            await status_msg.edit_text(f"❌ **GoFile Upload Failed!**\nError: `{e}`")
-        clear_user_data(user_id)
-
-async def is_waiting_for_thumbnail(_, __, message: Message):
-    if not message.from_user: return False
-    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_thumbnail"
-
+# --- NAYE ORDER WALE HANDLERS ---
+# Yeh special state wale handlers ab file_handler se pehle aate hain
 @app.on_message(filters.photo & filters.private & filters.create(is_waiting_for_thumbnail))
 async def thumbnail_handler(_, message: Message):
     user_id = message.from_user.id
@@ -234,18 +64,20 @@ async def thumbnail_handler(_, message: Message):
     thumb_path = await message.download(file_name=os.path.join(config.DOWNLOAD_DIR, str(user_id), "custom_thumb.jpg"))
     user_data[user_id]["custom_thumbnail"] = thumb_path
     user_data[user_id]["state"] = "waiting_for_filename"
-    await status_msg.edit_text("✅ **Thumbnail saved!**\n\nNow, send the **filename** for the video (without extension).")
+    await status_msg.edit_text(
+        "✅ **Thumbnail saved!**\n\n"
+        "Now, send me the **filename** (without extension) you want for the merged video."
+    )
 
 @app.on_message(filters.command("notg_thumbnail") & filters.private & filters.create(is_waiting_for_thumbnail))
 async def no_thumbnail_handler(_, message: Message):
     user_id = message.from_user.id
     user_data[user_id]["custom_thumbnail"] = None
     user_data[user_id]["state"] = "waiting_for_filename"
-    await user_data[user_id]["status_message"].edit_text("👍 **Okay, I will use a default thumbnail.**\n\nNow, send the **filename** for the video (without extension).")
-
-async def is_waiting_for_filename(_, __, message: Message):
-    if not message.from_user: return False
-    return user_data.get(message.from_user.id, {}).get("state") == "waiting_for_filename"
+    await user_data[user_id]["status_message"].edit_text(
+        "👍 **Okay, I will generate a default thumbnail.**\n\n"
+        "Now, send me the **filename** (without extension) you want for the merged video."
+    )
 
 @app.on_message(filters.text & filters.private & filters.create(is_waiting_for_filename))
 async def filename_handler(client, message: Message):
@@ -255,14 +87,118 @@ async def filename_handler(client, message: Message):
     user_data[user_id]["custom_filename"] = filename
     user_data[user_id]["state"] = None
     
-    await status_msg.edit_text(f"✅ **Filename set to:** `{filename}.mkv`\n\n🚀 Starting upload...")
+    await status_msg.edit_text(f"✅ **Filename set to:** `{filename}.mkv`\n\n🚀 Starting final upload to Telegram...")
     
-    file_path = user_data[user_id]["final_file"]
+    # Ab yahin se upload shuru hoga
+    file_path = user_data[user_id]["merged_file"]
     thumb_path = user_data[user_id].get("custom_thumbnail")
     
-    await upload_to_telegram(client, message.chat.id, file_path, status_msg, thumb_path, filename, user_mention=message.from_user.mention)
-    clear_user_data(user_id)
+    await upload_to_telegram(
+        client=client, chat_id=message.chat.id, file_path=file_path, 
+        status_message=status_msg, custom_thumbnail=thumb_path, custom_filename=filename
+    )
+    clear_user_data(user_id) # Process poora hone par cleanup
+
+# --- AAM FILE HANDLER ---
+USED_COMMANDS = ["start", "help", "cancel", "merge", "notg_thumbnail"]
+@app.on_message(filters.video | (filters.text & ~filters.command(USED_COMMANDS)) & filters.private)
+async def file_handler(_, message: Message):
+    if not message.from_user: return
+    user_id = message.from_user.id
+    if user_data.get(user_id, {}).get("state"):
+        await message.reply_text("I am waiting for you to send a thumbnail or filename. Please follow the instructions or use /cancel to start over.")
+        return
+    
+    if user_id not in user_data:
+        user_data[user_id] = {"queue": []}
+    
+    item = message if message.video else message.text
+    item_type = "Video" if message.video else "Link"
+
+    if item_type == "Link" and not is_valid_url(item):
+        await message.reply_text("⚠️ This doesn't look like a valid direct download link.", quote=True)
+        return
+
+    user_data[user_id].setdefault("queue", []).append(item)
+    await message.reply_text(f"✅ **{item_type} added!**\n➢ **Queue:** `{len(user_data[user_id]['queue'])}` items.")
+
+# --- MERGE HANDLER AB SEEDHA UPLOAD OPTIONS DEGA ---
+@app.on_message(filters.command("merge") & filters.private)
+async def merge_handler(client, message: Message):
+    if not message.from_user: return
+    user_id = message.from_user.id
+
+    if user_id not in user_data or not user_data[user_id].get("queue"):
+        await message.reply_text("Your queue is empty.", quote=True)
+        return
+    if len(user_data[user_id]["queue"]) < 2:
+        await message.reply_text("You need at least two items to merge.", quote=True)
+        return
+        
+    status_msg = await message.reply_text("🚀 **Starting process...**", quote=True)
+    user_data[user_id]["status_message"] = status_msg
+
+    video_paths = []
+    queue = user_data[user_id]["queue"]
+    for i, item in enumerate(queue):
+        await status_msg.edit_text(f"Downloading item {i+1} of {len(queue)}...")
+        file_path = await download_from_url(item, user_id, status_msg) if isinstance(item, str) else await download_from_tg(item, user_id, status_msg)
+        if not file_path:
+            await status_msg.edit_text("A download failed. Cancelling operation.")
+            clear_user_data(user_id)
+            return
+        video_paths.append(file_path)
+            
+    merged_path = await merge_videos(video_paths, user_id, status_msg)
+    if not merged_path:
+        clear_user_data(user_id)
+        return
+
+    user_data[user_id]["merged_file"] = merged_path
+    
+    # Merge ke baad seedha upload options dikhayein
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📤 Upload to Telegram", callback_data="upload_tg")],
+        [InlineKeyboardButton("🔗 Upload to GoFile.io", callback_data="upload_gofile")]
+    ])
+    await status_msg.edit_text(
+        "✅ **Merge Successful!**\n\nChoose where you want to upload the file:",
+        reply_markup=keyboard
+    )
+
+# --- CALLBACK HANDLER AB NAYA FLOW SHURU KAREGA ---
+@app.on_callback_query()
+async def callback_handler(client, query: CallbackQuery):
+    user_id = query.from_user.id
+    data = query.data
+    
+    if user_id not in user_data or not user_data[user_id].get("merged_file"):
+        await query.answer("Sorry, your session has expired or been cancelled.", show_alert=True)
+        return
+
+    await query.message.edit_reply_markup(None)
+    status_msg = user_data[user_id]["status_message"]
+    
+    if data == "upload_tg":
+        # Ab yeh seedha upload nahi karega, balki thumbnail maangega
+        user_data[user_id]["state"] = "waiting_for_thumbnail"
+        await status_msg.edit_text(
+            "Okay, preparing for Telegram upload.\n\n"
+            "Please send me the **thumbnail** you want to use.\n\n"
+            "To use a default thumbnail, send /notg_thumbnail."
+        )
+    
+    elif data == "upload_gofile":
+        await status_msg.edit_text("🚀 Preparing to upload to GoFile.io...")
+        try:
+            uploader = GofileUploader()
+            link = await uploader.upload_file(user_data[user_id]["merged_file"])
+            await status_msg.edit_text(f"✅ **Upload to GoFile Complete!**\n\n🔗 **Your Link:** {link}")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ **GoFile Upload Failed!**\nError: `{e}`")
+        # GoFile upload ke baad cleanup
+        clear_user_data(user_id)
 
 if __name__ == "__main__":
-    print("Bot is starting with quality selection feature...")
+    print("Bot is starting...")
     app.run()
