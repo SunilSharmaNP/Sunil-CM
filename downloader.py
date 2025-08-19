@@ -1,38 +1,48 @@
-# downloader.py
-
+# downloader.py (Modified to prevent FloodWait errors)
 import aiohttp
 import os
 import time
 from config import config
-# 1. utils से नया 'generate_progress_string' इम्पोर्ट किया गया
-from utils import generate_progress_string
+from utils import get_human_readable_size, get_progress_bar # Assuming these functions exist in your utils.py
 
-# --- थ्रॉटलिंग लॉजिक (यह अपरिवर्तित है) ---
+# --- Throttling Logic ---
+# Global dictionary to store the last time a message was updated.
+# This helps us avoid editing the message too frequently.
+# The key will be a unique identifier for the message being edited.
 last_edit_time = {}
+
+# We will only allow message edits once every 4 seconds.
 EDIT_THROTTLE_SECONDS = 4.0
 
 async def smart_progress_editor(status_message, text: str):
-    """एक कस्टम एडिटर जो संदेश को संपादित करने से पहले जांचता है कि पर्याप्त समय बीत चुका है या नहीं।"""
-    if not status_message: return
+    """
+    A custom editor that checks if enough time has passed before editing a message.
+    This is the core of the FloodWait prevention.
+    """
+    # Create a unique key for the message
     message_key = f"{status_message.chat.id}_{status_message.id}"
     now = time.time()
+
+    # Get the last time we edited this message, defaulting to 0 if it's the first time
     last_time = last_edit_time.get(message_key, 0)
 
+    # If more than EDIT_THROTTLE_SECONDS have passed, we can edit the message
     if (now - last_time) > EDIT_THROTTLE_SECONDS:
         try:
             await status_message.edit_text(text)
+            # IMPORTANT: Update the last edit time for this message
             last_edit_time[message_key] = now
         except Exception:
+            # If we still get an error (e.g., message not modified), we just ignore it
+            # and try again on the next scheduled update.
             pass
 
-# 2. फंक्शन सिग्नेचर में user_mention जोड़ा गया
-async def download_from_url(url: str, user_id: int, status_message, user_mention: str) -> str or None:
-    """एक सीधे URL से फाइल डाउनलोड करता है और आकर्षक प्रोग्रेस रिपोर्टिंग करता है।"""
-    file_name = url.split('/')[-1].split('?')[0] or f"video_{int(time.time())}.mp4"
+async def download_from_url(url: str, user_id: int, status_message) -> str or None:
+    """Downloads a file from a direct URL with smart progress reporting."""
+    file_name = url.split('/')[-1] or f"video_{int(time.time())}.mp4"
     user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
     os.makedirs(user_download_dir, exist_ok=True)
     dest_path = os.path.join(user_download_dir, file_name)
-    start_time = time.time() # प्रोग्रेस की गणना के लिए जोड़ा गया
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -45,51 +55,50 @@ async def download_from_url(url: str, user_id: int, status_message, user_mention
                             f.write(chunk)
                             downloaded += len(chunk)
                             if total_size > 0:
-                                now = time.time()
                                 progress = downloaded / total_size
-                                speed = downloaded / (now - start_time) if (now - start_time) > 0 else 0
-                                eta = (total_size - downloaded) / speed if speed > 0 else 0
-                                
-                                # 3. पुराने प्रोग्रेस टेक्स्ट को 'generate_progress_string' से बदला गया
-                                progress_text = generate_progress_string(
-                                    title=file_name, status="Downloading", progress=progress,
-                                    processed_bytes=downloaded, total_bytes=total_size,
-                                    speed=speed, eta=eta, start_time=start_time,
-                                    user_mention=user_mention, user_id=user_id
+                                # 1. Build the progress message text
+                                progress_text = (
+                                    f"📥 **Downloading from URL...**\n"
+                                    f"➢ `{file_name}`\n"
+                                    f"➢ {get_progress_bar(progress)} `{progress:.1%}`\n"
+                                    f"➢ **Size:** `{get_human_readable_size(downloaded)}` / `{get_human_readable_size(total_size)}`"
                                 )
+                                # 2. Call our new smart editor instead of editing directly
                                 await smart_progress_editor(status_message, progress_text)
                     
-                    # 4. अंतिम संदेश को सरल बनाया गया
-                    await status_message.edit_text(f"✅ **Downloaded:** `{file_name}`")
+                    # Send a final update to show the download is done
+                    await status_message.edit_text(f"✅ **Downloaded:** `{file_name}`\n\nPreparing to merge...")
                     return dest_path
                 else:
-                    await status_message.edit_text(f"❌ **Download Failed!**\nStatus Code: {resp.status}")
+                    await status_message.edit_text(f"❌ **Download Failed!**\nStatus: {resp.status} for URL: `{url}`")
                     return None
     except Exception as e:
-        await status_message.edit_text(f"❌ **Download Error!**\n`{str(e)}`")
+        # If the bot is already flood-waited, even sending an error can fail.
+        # So we wrap this in a try/except block too.
+        try:
+            await status_message.edit_text(f"❌ **Download Failed!**\nError: `{str(e)}`")
+        except Exception:
+            pass
         return None
 
-# 2. फंक्शन सिग्नेचर में user_mention जोड़ा गया
-async def download_from_tg(message, user_id: int, status_message, user_mention: str) -> str or None:
-    """टेलीग्राम से फाइल डाउनलोड करता है और आकर्षक प्रोग्रेस रिपोर्टिंग करता है।"""
+async def download_from_tg(message, user_id: int, status_message) -> str or None:
+    """Downloads a file from Telegram with smart progress reporting."""
     user_download_dir = os.path.join(config.DOWNLOAD_DIR, str(user_id))
     os.makedirs(user_download_dir, exist_ok=True)
-    start_time = time.time() # प्रोग्रेस की गणना के लिए जोड़ा गया
     
+    # We define the progress callback here, which will be called by Pyrogram
     async def progress_func(current, total):
-        now = time.time()
         progress = current / total
-        speed = current / (now - start_time) if (now - start_time) > 0 else 0
-        eta = (total - current) / speed if speed > 0 else 0
         file_name = message.video.file_name if message.video and message.video.file_name else "telegram_video.mp4"
-
-        # 3. पुराने प्रोग्रेस टेक्स्ट को 'generate_progress_string' से बदला गया
-        progress_text = generate_progress_string(
-            title=file_name, status="Downloading", progress=progress,
-            processed_bytes=current, total_bytes=total,
-            speed=speed, eta=eta, start_time=start_time,
-            user_mention=user_mention, user_id=user_id
+        
+        # 1. Build the progress message text
+        progress_text = (
+            f"📥 **Downloading from Telegram...**\n"
+            f"➢ `{file_name}`\n"
+            f"➢ {get_progress_bar(progress)} `{progress:.1%}`\n"
+            f"➢ **Size:** `{get_human_readable_size(current)}` / `{get_human_readable_size(total)}`"
         )
+        # 2. Call our new smart editor
         await smart_progress_editor(status_message, progress_text)
 
     try:
@@ -98,9 +107,11 @@ async def download_from_tg(message, user_id: int, status_message, user_mention: 
             progress=progress_func
         )
         file_name = os.path.basename(file_path)
-        # 4. अंतिम संदेश को सरल बनाया गया
-        await status_message.edit_text(f"✅ **Downloaded:** `{file_name}`")
+        await status_message.edit_text(f"✅ **Downloaded:** `{file_name}`\n\nPreparing to merge...")
         return file_path
     except Exception as e:
-        await status_message.edit_text(f"❌ **Download Failed!**\n`{str(e)}`")
+        try:
+            await status_message.edit_text(f"❌ **Download Failed!**\nError: `{str(e)}`")
+        except Exception:
+            pass
         return None
