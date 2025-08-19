@@ -1,0 +1,65 @@
+{
+  "name": "Enhanced MERGE-BOT",
+  "description": "Advanced Telegram Video Merger - Rich UI + Modern Core",
+  "keywords": ["telegram", "bot", "video", "merger", "ffmpeg"],
+  "website": "https://github.com/your-username/Enhanced-MERGE-BOT",
+  "repository": "https://github.com/your-username/Enhanced-MERGE-BOT",
+  "logo": "https://telegra.ph/file/enhanced-merge-bot-logo.png",
+  "stack": "container",
+  "env": {
+    "API_ID": {
+      "description": "Get from https://my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Get from https://my.telegram.org", 
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Get from @BotFather",
+      "required": true
+    },
+    "OWNER": {
+      "description": "Your Telegram User ID",
+      "required": true
+    },
+    "OWNER_USERNAME": {
+      "description": "Your Telegram Username (without @)",
+      "required": true
+    },
+    "PASSWORD": {
+      "description": "Password for bot access",
+      "required": true
+    },
+    "DATABASE_URL": {
+      "description": "MongoDB Database URL (optional)",
+      "required": false
+    },
+    "GOFILE_TOKEN": {
+      "description": "GoFile.io API Token (optional)",
+      "required": false
+    },
+    "USER_SESSION_STRING": {
+      "description": "Premium account session (optional)",
+      "required": false
+    },
+    "LOGCHANNEL": {
+      "description": "Log channel ID (optional)",
+      "required": false
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest"
+    },
+    {
+      "url": "heroku/python"
+    }
+  ]
+}
