@@ -1,0 +1,91 @@
+# Enhanced MERGE-BOT - Git Ignore Rules
+
+# Environment and Configuration
+config.env
+.env
+*.env
+config/*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Downloads and Temp Files
+downloads/
+temp/
+cache/
+logs/
+backups/
+*.log
+*.tmp
+
+# FFmpeg
+ffmpeg
+ffprobe
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Session Files
+*.session
+*.session-journal
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Deployment
+Procfile.local
+.env.local
+.env.production
+
+# User Generated
+thumbnails/
+merged_videos/
+user_data/
+sessions/
